@@ -1,0 +1,104 @@
+body, html {
+    font-family: var(--vscode-font-family);
+    color: var(--vscode-editor-foreground);
+    background-color: var(--vscode-editor-background);
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+#chat-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+.message {
+    display: flex;
+    margin-bottom: 12px;
+}
+
+.message-content {
+    padding: 8px 12px;
+    border-radius: 8px;
+    max-width: 90%;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.user-message {
+    justify-content: flex-end; /* Align user messages to the right */
+}
+
+.user-message .message-content {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+.bot-message {
+    justify-content: flex-start; /* Align bot messages to the left */
+}
+
+.bot-message .message-content {
+    background-color: var(--vscode-editorWidget-background);
+}
+
+/* --- Styles for Markdown & Code Blocks --- */
+.bot-message code {
+    font-family: var(--vscode-editor-font-family);
+    background-color: var(--vscode-textBlockQuote-background);
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+}
+
+.bot-message pre {
+    margin: 8px 0;
+    padding: 10px;
+    border-radius: 6px;
+    background-color: var(--vscode-textCodeBlock-background);
+    white-space: pre-wrap;
+}
+
+.bot-message pre code {
+    padding: 0;
+    background-color: transparent;
+}
+/* --- End --- */
+
+.input-container {
+    display: flex;
+    padding: 8px;
+    border-top: 1px solid var(--vscode-sideBar-border);
+    background-color: var(--vscode-editor-background);
+}
+
+textarea {
+    flex: 1;
+    font-family: var(--vscode-font-family);
+    background-color: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    resize: none;
+    padding: 8px;
+}
+
+button {
+    margin-left: 8px;
+    background-color: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+button:hover {
+    background-color: var(--vscode-button-hoverBackground);
+}
