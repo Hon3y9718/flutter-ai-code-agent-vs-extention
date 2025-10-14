@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { askLLM } from "../llmService";
 import { buildContext } from "../contextManager";
+import { applyDiffPatch } from "../patcher"; // Add this line
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
@@ -35,12 +36,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const relevantContext = await buildContext();
 
         const answer = await askLLM(
-          `You are a Flutter expert specializing in GetX. 
-            When you provide a full code file for a fix, you MUST wrap it in a markdown block with the language set to 'dart' and provide the relative file path in a 'filename' attribute.
-            Example:
-            \`\`\`dart filename="lib/views/home_view.dart"
-            // ... your code here ...
-            \`\`\``,
+          `You are a Flutter expert specializing in GetX. Your goal is to provide code fixes as a patch.
+  When you suggest a code change, you MUST provide it in the unified diff format.
+  Do NOT provide the full file. Only provide the diff for the changes.
+  
+  Example of the required format:
+  Here are the patches for the file:
+  
+  \`\`\`diff filename="lib/views/home_view.dart"
+  --- a/lib/views/home_view.dart
+  +++ b/lib/views/home_view.dart
+  @@ -15,7 +15,7 @@
+       child: Scaffold(
+         appBar: AppBar(
+           backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+  -        title: Text("Old Title"),
+  +        title: Text("New Fixed Title"),
+         ),
+         body: Center(
+           child: Column(
+  \`\`\``,
           // Use the new, focused context
           `Here is the relevant code context:\n${relevantContext}\n\nUser Question: ${question}`
         );
@@ -49,36 +64,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({ command: "response", text: answer });
       }
 
+      //   if (message.command === "applyPatch") {
+      //     const { filename, code } = message;
+      //     // Find the file in the workspace
+      //     const files = await vscode.workspace.findFiles(
+      //       filename,
+      //       "**/node_modules/**",
+      //       1
+      //     );
+      //     if (files.length > 0) {
+      //       const fileUri = files[0];
+
+      //       const confirm = await vscode.window.showWarningMessage(
+      //         `Are you sure you want to overwrite the contents of ${filename}?`,
+      //         { modal: true },
+      //         "Yes"
+      //       );
+
+      //       if (confirm === "Yes") {
+      //         const edit = new vscode.WorkspaceEdit();
+      //         // Create a range that covers the entire document
+      //         const document = await vscode.workspace.openTextDocument(fileUri);
+      //         const fullRange = new vscode.Range(
+      //           document.positionAt(0),
+      //           document.positionAt(document.getText().length)
+      //         );
+      //         edit.replace(fileUri, fullRange, code);
+      //         await vscode.workspace.applyEdit(edit);
+      //         vscode.window.showInformationMessage(
+      //           `Applied patch to ${filename}`
+      //         );
+      //       }
+      //     } else {
+      //       vscode.window.showErrorMessage(`Could not find file: ${filename}`);
+      //     }
+      //   }
+
       if (message.command === "applyPatch") {
-        const { filename, code } = message;
-        // Find the file in the workspace
+        const { filename, diff } = message; // Changed 'code' to 'diff'
         const files = await vscode.workspace.findFiles(
           filename,
           "**/node_modules/**",
           1
         );
+
         if (files.length > 0) {
           const fileUri = files[0];
-
-          const confirm = await vscode.window.showWarningMessage(
-            `Are you sure you want to overwrite the contents of ${filename}?`,
-            { modal: true },
-            "Yes"
-          );
-
-          if (confirm === "Yes") {
-            const edit = new vscode.WorkspaceEdit();
-            // Create a range that covers the entire document
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            const fullRange = new vscode.Range(
-              document.positionAt(0),
-              document.positionAt(document.getText().length)
-            );
-            edit.replace(fileUri, fullRange, code);
-            await vscode.workspace.applyEdit(edit);
+          try {
+            // Use our new patcher utility
+            await applyDiffPatch(fileUri, diff);
             vscode.window.showInformationMessage(
               `Applied patch to ${filename}`
             );
+          } catch (e) {
+            console.error(e);
+            vscode.window.showErrorMessage(`Failed to apply patch: ${e}`);
           }
         } else {
           vscode.window.showErrorMessage(`Could not find file: ${filename}`);
@@ -86,8 +126,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
   }
-
-  private _getHtmlForWebview() {
+private _getHtmlForWebview() {
     return /* html */ `
       <!DOCTYPE html>
       <html lang="en">
@@ -96,23 +135,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Flutter Agent</title>
         <style>
-          /* --- Existing Body, Layout, and Message Styles --- */
+          /* Overall Layout & Theming */
           body {
             font-family: var(--vscode-font-family);
             color: var(--vscode-editor-foreground);
             background-color: var(--vscode-editor-background);
-            margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
           }
-          #chat-history { flex: 1; overflow-y: auto; padding: 10px; }
-          .message { display: flex; margin-bottom: 12px; }
-          .message-content { padding: 8px 12px; border-radius: 12px; max-width: 90%; white-space: pre-wrap; word-wrap: break-word; }
-          .user-message { justify-content: flex-end; }
-          .user-message .message-content { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-          .bot-message { justify-content: flex-start; }
-          .bot-message .message-content { background-color: var(--vscode-editorWidget-background); }
-          .bot-message.loading .message-content { font-style: italic; }
 
-          /* --- NEW Styles for Code Blocks & Buttons --- */
+          /* Chat History Area */
+          #chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+          }
+
+          /* General Message Bubble Styling */
+          .message {
+            display: flex;
+            margin-bottom: 12px;
+          }
+          .message-content {
+            padding: 8px 12px;
+            border-radius: 12px;
+            max-width: 90%;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+          }
+
+          /* User Message Styling */
+          .user-message {
+            justify-content: flex-end;
+          }
+          .user-message .message-content {
+            background-color: var(--vscode-list-activeSelectionBackground);
+            color: var(--vscode-list-activeSelectionForeground);
+          }
+
+          /* Bot Message Styling */
+          .bot-message {
+            justify-content: flex-start;
+          }
+          .bot-message .message-content {
+            background-color: var(--vscode-editorWidget-background);
+          }
+          .bot-message.loading .message-content {
+            font-style: italic;
+            color: var(--vscode-editor-foreground);
+          }
+          
+          /* Styles for Code Blocks & Buttons */
           .code-block-wrapper {
             position: relative;
             background-color: var(--vscode-textCodeBlock-background);
@@ -143,35 +219,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           .code-block-header .buttons button:hover {
             background-color: var(--vscode-button-secondaryHoverBackground);
           }
-          pre { margin: 0; padding: 10px; white-space: pre-wrap; }
+          pre {
+            margin: 0;
+            padding: 10px;
+            white-space: pre-wrap;
+          }
 
-          /* --- Input Area Styles --- */
-          .input-container { display: flex; align-items: center; padding: 10px; border-top: 1px solid var(--vscode-sideBar-border); }
-          textarea { flex: 1; resize: none; padding: 8px; font-family: var(--vscode-font-family); background-color: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
-          button { margin-left: 10px; padding: 8px 12px; font-family: var(--vscode-font-family); background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 6px; cursor: pointer; }
-          button:hover { background-color: var(--vscode-button-hoverBackground); }
+          /* Input Area at the Bottom */
+          .input-container {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-top: 1px solid var(--vscode-sideBar-border);
+            background-color: var(--vscode-editor-background);
+          }
+          textarea {
+            flex: 1;
+            resize: none;
+            padding: 8px;
+            font-family: var(--vscode-font-family);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 6px;
+          }
+          button {
+            margin-left: 10px;
+            padding: 8px 12px;
+            font-family: var(--vscode-font-family);
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+          }
+          button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+          }
         </style>
       </head>
       <body>
+
         <div id="chat-history"></div>
+
         <div class="input-container">
           <textarea id="question" placeholder="Ask about your Flutter project..." rows="1"></textarea>
           <button id="send">Send</button>
         </div>
+
         <script>
           const vscode = acquireVsCodeApi();
           const chatHistory = document.getElementById('chat-history');
+          const questionInput = document.getElementById('question');
+          const sendButton = document.getElementById('send');
 
-          // --- NEW: Function to render a code block with buttons ---
           function renderCodeBlock(code, lang, filename) {
             const id = 'code-' + Math.random().toString(36).substr(2, 9);
+            const applyButtonText = lang === 'diff' ? 'Apply Patch' : 'Apply Code';
             return \`
               <div class="code-block-wrapper">
                 <div class="code-block-header">
                   <span class="filename">\${filename || ''}</span>
                   <div class="buttons">
                     <button class="copy-btn" data-target="\${id}">Copy</button>
-                    \${filename ? \`<button class="apply-btn" data-target="\${id}" data-filename="\${filename}">Apply Patch</button>\` : ''}
+                    \${filename ? \`<button class="apply-btn" data-target="\${id}" data-filename="\${filename}">\${applyButtonText}</button>\` : ''}
                   </div>
                 </div>
                 <pre><code id="\${id}" class="language-\${lang}">\${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>
@@ -179,28 +290,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             \`;
           }
 
-          // --- MODIFIED: addMessage now looks for code blocks ---
           function addMessage(type, text) {
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ' + type + '-message';
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             
-            // Regex to find our special code blocks
-            const codeBlockRegex = /\\\`\\\`\\\`dart filename="([^"]+)"([\\s\\S]*?)\\\`\\\`\\\`/g;
+            const codeBlockRegex = /\\\`\\\`\\\`(dart|diff) filename="([^"]+)"([\\s\\S]*?)\\\`\\\`\\\`/g;
             let lastIndex = 0;
             let renderedHtml = '';
-
             let match;
+
             while ((match = codeBlockRegex.exec(text)) !== null) {
-              // Add text before the code block
               renderedHtml += text.slice(lastIndex, match.index).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-              // Render the code block
-              const [_, filename, code] = match;
-              renderedHtml += renderCodeBlock(code.trim(), 'dart', filename);
+              const [_, language, filename, code] = match; 
+              renderedHtml += renderCodeBlock(code.trim(), language, filename);
               lastIndex = match.index + match[0].length;
             }
-            // Add any remaining text
             renderedHtml += text.slice(lastIndex).replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
             contentDiv.innerHTML = renderedHtml || text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -211,7 +317,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return messageDiv;
           }
           
-          // --- NEW: Event listeners for the new buttons ---
           chatHistory.addEventListener('click', (event) => {
             const target = event.target;
             if (target.classList.contains('copy-btn')) {
@@ -227,30 +332,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               vscode.postMessage({
                 command: 'applyPatch',
                 filename: filename,
-                code: codeElement.textContent
+                diff: codeElement.textContent
               });
             }
           });
 
-          // --- Existing script for sending messages and handling responses ---
-          const sendButton = document.getElementById('send');
-          const questionInput = document.getElementById('question');
           function sendMessage() {
             const text = questionInput.value.trim();
             if (text) {
-                addMessage('user', text);
-                vscode.postMessage({ command: 'ask', text });
-                questionInput.value = '';
-                questionInput.focus();
+              addMessage('user', text);
+              vscode.postMessage({ command: 'ask', text });
+              questionInput.value = '';
+              questionInput.focus();
             }
-            }
+          }
+
           sendButton.addEventListener('click', sendMessage);
-          questionInput.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } });
+
+          questionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              sendMessage();
+            }
+          });
+
           window.addEventListener('message', event => {
             const { command, text } = event.data;
             if (command === 'response') {
               const loadingMessage = document.querySelector('.loading');
-              if (loadingMessage) loadingMessage.remove();
+              if (loadingMessage) {
+                loadingMessage.remove();
+              }
               addMessage('bot', text);
             } else if (command === 'showLoading') {
               addMessage('bot loading', 'Thinking...');
