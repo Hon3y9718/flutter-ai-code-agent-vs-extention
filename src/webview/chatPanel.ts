@@ -1,117 +1,104 @@
 import * as vscode from "vscode";
 import { askLLM } from "../llmService";
-import { buildContext } from "../contextManager";
-import { applyDiffPatch } from "../patcher"; // Add this line
+import { applyDiffPatch } from "../patcher";
+import { buildContext } from '../contextManager';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
+  public setChatContext(selectedCode: string) {
+    if (this._view) {
+      this._view.show?.(true); // Bring the chat view into focus
+      this._view.webview.postMessage({
+        command: "setContext",
+        text: selectedCode,
+      });
+    }
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this._view = webviewView;
 
-    // Allow scripts and access to local resources
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.context.extensionUri],
     };
 
-    // Set the HTML content
     webviewView.webview.html = this._getHtmlForWebview();
 
-    // Handle messages from the webview
-    // Inside the resolveWebviewView method...
     webviewView.webview.onDidReceiveMessage(async (message) => {
       if (message.command === "ask") {
         const question = message.text;
+        const selectionContext = message.context; // Get context from the UI
+
         if (!question) {
           return;
         }
 
         this._view?.webview.postMessage({ command: "showLoading" });
 
-        // --- THIS IS THE KEY CHANGE ---
-        // Replace the old project file logic with the new context builder
-        const relevantContext = await buildContext();
+
+        const semanticContext = await buildContext();
+        let finalUserPrompt = `Context:${semanticContext}\n\nUser Question: ${question}`;
+        // If there's selected code, prepend it to the prompt
+        if (selectionContext) {
+          finalUserPrompt = `Given this selected code snippet:\n\`\`\`dart\n${selectionContext}\n\`\`\`\n\n${finalUserPrompt}`;
+        } else {
+            // 👇 If no selection, use the new vectorDB context builder
+            const semanticContext = await buildContext();
+            finalUserPrompt = `${semanticContext}\n\nUser Question: ${question}`;
+        }
 
         const answer = await askLLM(
-          `You are a Flutter expert specializing in GetX. Your goal is to provide code fixes as a patch.
-  When you suggest a code change, you MUST provide it in the unified diff format.
-  Do NOT provide the full file. Only provide the diff for the changes.
+            this.context,
+          `You are a senior Flutter/Dart developer and AI assistant. 
+  Your response MUST be in a JSON format with the following keys: "explanation", "code", and "diff".
+
+  1.  "explanation": A conversational, helpful explanation in markdown.
+  2.  "code": If you are providing code, this should be the complete, clean code snippet formatted for display.
+  3.  "diff": If the code is a change, this should be the patch in the unified diff format, including the filename attribute.
+
+  - If the user's query doesn't require code, "code" and "diff" MUST be null.
+  - If you are providing new code (not a change), "diff" MUST be null.
   
-  Example of the required format:
-  Here are the patches for the file:
-  
-  \`\`\`diff filename="lib/views/home_view.dart"
-  --- a/lib/views/home_view.dart
-  +++ b/lib/views/home_view.dart
-  @@ -15,7 +15,7 @@
-       child: Scaffold(
-         appBar: AppBar(
-           backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-  -        title: Text("Old Title"),
-  +        title: Text("New Fixed Title"),
-         ),
-         body: Center(
-           child: Column(
-  \`\`\``,
-          // Use the new, focused context
-          `Here is the relevant code context:\n${relevantContext}\n\nUser Question: ${question}`
+  Example Response:
+  {
+    "explanation": "Of course! Here is a more efficient way to write that widget. I've used a 'const' constructor to improve performance.",
+    "code": "\`\`\`dart\\n// a clean code block\\n\`\`\`",
+    "diff": "\`\`\`diff filename=\\"lib/main.dart\\"\\n--- a/lib/main.dart\\n+++ b/lib/main.dart\\n@@ ... @@\\n- old code\\n+ new code\\n\`\`\`"
+  }`,
+          finalUserPrompt
         );
-        // --- END OF CHANGE ---
+
+        try {
+          // The LLM's raw response is a JSON string, so we parse it.
+          const structuredResponse = JSON.parse(answer);
+          this._view?.webview.postMessage({
+            command: "response",
+            data: structuredResponse,
+          });
+        } catch (e) {
+          // If the LLM fails to return valid JSON, we fall back to displaying the raw text.
+          console.error("Failed to parse LLM response as JSON:", answer);
+          this._view?.webview.postMessage({
+            command: "response",
+            data: { explanation: answer, code: null, diff: null },
+          });
+        }
 
         this._view?.webview.postMessage({ command: "response", text: answer });
-      }
-
-      //   if (message.command === "applyPatch") {
-      //     const { filename, code } = message;
-      //     // Find the file in the workspace
-      //     const files = await vscode.workspace.findFiles(
-      //       filename,
-      //       "**/node_modules/**",
-      //       1
-      //     );
-      //     if (files.length > 0) {
-      //       const fileUri = files[0];
-
-      //       const confirm = await vscode.window.showWarningMessage(
-      //         `Are you sure you want to overwrite the contents of ${filename}?`,
-      //         { modal: true },
-      //         "Yes"
-      //       );
-
-      //       if (confirm === "Yes") {
-      //         const edit = new vscode.WorkspaceEdit();
-      //         // Create a range that covers the entire document
-      //         const document = await vscode.workspace.openTextDocument(fileUri);
-      //         const fullRange = new vscode.Range(
-      //           document.positionAt(0),
-      //           document.positionAt(document.getText().length)
-      //         );
-      //         edit.replace(fileUri, fullRange, code);
-      //         await vscode.workspace.applyEdit(edit);
-      //         vscode.window.showInformationMessage(
-      //           `Applied patch to ${filename}`
-      //         );
-      //       }
-      //     } else {
-      //       vscode.window.showErrorMessage(`Could not find file: ${filename}`);
-      //     }
-      //   }
-
-      if (message.command === "applyPatch") {
-        const { filename, diff } = message; // Changed 'code' to 'diff'
+      } else if (message.command === "applyPatch") {
+        const { filename, diff } = message;
         const files = await vscode.workspace.findFiles(
           filename,
           "**/node_modules/**",
           1
         );
-
         if (files.length > 0) {
           const fileUri = files[0];
           try {
-            // Use our new patcher utility
             await applyDiffPatch(fileUri, diff);
             vscode.window.showInformationMessage(
               `Applied patch to ${filename}`
@@ -126,246 +113,156 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
   }
-private _getHtmlForWebview() {
+
+  private _getHtmlForWebview() {
     return /* html */ `
       <!DOCTYPE html>
       <html lang="en">
       <head>
         <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Flutter Agent</title>
         <style>
-          /* Overall Layout & Theming */
-          body {
-            font-family: var(--vscode-font-family);
-            color: var(--vscode-editor-foreground);
-            background-color: var(--vscode-editor-background);
-            margin: 0;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-          }
-
-          /* Chat History Area */
-          #chat-history {
-            flex: 1;
-            overflow-y: auto;
-            padding: 10px;
-          }
-
-          /* General Message Bubble Styling */
-          .message {
-            display: flex;
-            margin-bottom: 12px;
-          }
-          .message-content {
-            padding: 8px 12px;
-            border-radius: 12px;
-            max-width: 90%;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-          }
-
-          /* User Message Styling */
-          .user-message {
-            justify-content: flex-end;
-          }
-          .user-message .message-content {
-            background-color: var(--vscode-list-activeSelectionBackground);
-            color: var(--vscode-list-activeSelectionForeground);
-          }
-
-          /* Bot Message Styling */
-          .bot-message {
-            justify-content: flex-start;
-          }
-          .bot-message .message-content {
-            background-color: var(--vscode-editorWidget-background);
-          }
-          .bot-message.loading .message-content {
-            font-style: italic;
-            color: var(--vscode-editor-foreground);
-          }
-          
-          /* Styles for Code Blocks & Buttons */
-          .code-block-wrapper {
-            position: relative;
-            background-color: var(--vscode-textCodeBlock-background);
-            border-radius: 8px;
-            margin: 10px 0;
-          }
-          .code-block-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 4px 8px;
-            background-color: var(--vscode-peekViewTitle-background);
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-          }
-          .code-block-header .filename {
-            font-size: 0.8em;
-            font-family: var(--vscode-font-family);
-          }
-          .code-block-header .buttons button {
-            background: none;
-            border: none;
-            color: var(--vscode-editor-foreground);
-            cursor: pointer;
-            font-size: 0.9em;
-            padding: 2px 6px;
-          }
-          .code-block-header .buttons button:hover {
-            background-color: var(--vscode-button-secondaryHoverBackground);
-          }
-          pre {
-            margin: 0;
-            padding: 10px;
-            white-space: pre-wrap;
-          }
-
-          /* Input Area at the Bottom */
-          .input-container {
-            display: flex;
-            align-items: center;
-            padding: 10px;
-            border-top: 1px solid var(--vscode-sideBar-border);
-            background-color: var(--vscode-editor-background);
-          }
-          textarea {
-            flex: 1;
-            resize: none;
-            padding: 8px;
-            font-family: var(--vscode-font-family);
-            background-color: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
-            border: 1px solid var(--vscode-input-border);
-            border-radius: 6px;
-          }
-          button {
-            margin-left: 10px;
-            padding: 8px 12px;
-            font-family: var(--vscode-font-family);
-            background-color: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-          }
-          button:hover {
-            background-color: var(--vscode-button-hoverBackground);
-          }
+          body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+          #context-container { padding: 8px 10px; border-bottom: 1px solid var(--vscode-sideBar-border); display: none; position: relative; }
+          #context-container h4 { margin: 0 0 5px 0; font-size: 0.9em; }
+          #context-code { background-color: var(--vscode-textCodeBlock-background); border-radius: 4px; padding: 5px 8px; max-height: 100px; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word; }
+          #clear-context-btn { position: absolute; top: 5px; right: 10px; background: none; border: none; color: var(--vscode-editor-foreground); cursor: pointer; font-size: 1.2em; }
+          #chat-history { flex: 1; overflow-y: auto; padding: 10px; }
+          .message { display: flex; margin-bottom: 12px; }
+          .message-content { padding: 8px 12px; border-radius: 12px; max-width: 90%; white-space: pre-wrap; word-wrap: break-word; }
+          .user-message { justify-content: flex-end; }
+          .user-message .message-content { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+          .bot-message { justify-content: flex-start; }
+          .bot-message .message-content { background-color: var(--vscode-editorWidget-background); }
+          .bot-message.loading .message-content { font-style: italic; }
+          .code-block-wrapper { position: relative; background-color: var(--vscode-textCodeBlock-background); border-radius: 8px; margin: 10px 0; }
+          .code-block-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background-color: var(--vscode-peekViewTitle-background); border-top-left-radius: 8px; border-top-right-radius: 8px; }
+          .code-block-header .filename { font-size: 0.8em; }
+          .code-block-header .buttons button { background: none; border: none; color: var(--vscode-editor-foreground); cursor: pointer; font-size: 0.9em; padding: 2px 6px; }
+          .code-block-header .buttons button:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
+          pre { margin: 0; padding: 10px; white-space: pre-wrap; }
+          .input-container { display: flex; align-items: center; padding: 10px; border-top: 1px solid var(--vscode-sideBar-border); }
+          textarea { flex: 1; resize: none; padding: 8px; font-family: var(--vscode-font-family); background-color: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 6px; }
+          button { margin-left: 10px; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+          button:hover { background-color: var(--vscode-button-hoverBackground); }
         </style>
       </head>
       <body>
-
+        <div id="context-container">
+          <button id="clear-context-btn" title="Clear context">&times;</button>
+          <h4>Talking about:</h4>
+          <div id="context-code"></div>
+        </div>
         <div id="chat-history"></div>
-
         <div class="input-container">
           <textarea id="question" placeholder="Ask about your Flutter project..." rows="1"></textarea>
           <button id="send">Send</button>
         </div>
-
+        
         <script>
           const vscode = acquireVsCodeApi();
           const chatHistory = document.getElementById('chat-history');
           const questionInput = document.getElementById('question');
           const sendButton = document.getElementById('send');
+          const contextContainer = document.getElementById('context-container');
+          const contextCode = document.getElementById('context-code');
+          const clearContextBtn = document.getElementById('clear-context-btn');
+          let currentSelectionContext = '';
 
-          function renderCodeBlock(code, lang, filename) {
-            const id = 'code-' + Math.random().toString(36).substr(2, 9);
-            const applyButtonText = lang === 'diff' ? 'Apply Patch' : 'Apply Code';
-            return \`
-              <div class="code-block-wrapper">
-                <div class="code-block-header">
-                  <span class="filename">\${filename || ''}</span>
-                  <div class="buttons">
-                    <button class="copy-btn" data-target="\${id}">Copy</button>
-                    \${filename ? \`<button class="apply-btn" data-target="\${id}" data-filename="\${filename}">\${applyButtonText}</button>\` : ''}
-                  </div>
-                </div>
-                <pre><code id="\${id}" class="language-\${lang}">\${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>
-              </div>
-            \`;
-          }
-
-          function addMessage(type, text) {
+          function addMessage(type, data) {
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ' + type + '-message';
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
-            
-            const codeBlockRegex = /\\\`\\\`\\\`(dart|diff) filename="([^"]+)"([\\s\\S]*?)\\\`\\\`\\\`/g;
-            let lastIndex = 0;
-            let renderedHtml = '';
-            let match;
-
-            while ((match = codeBlockRegex.exec(text)) !== null) {
-              renderedHtml += text.slice(lastIndex, match.index).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-              const [_, language, filename, code] = match; 
-              renderedHtml += renderCodeBlock(code.trim(), language, filename);
-              lastIndex = match.index + match[0].length;
+            let html = data.explanation || '';
+            if (data.code) {
+              const id = 'code-' + Math.random().toString(36).substr(2, 9);
+              const diffMatch = data.diff ? data.diff.match(/filename="([^"]+)"/) : null;
+              const filename = diffMatch ? diffMatch[1] : '';
+              const cleanCode = data.code.replace(/^\`\`\`dart\\n/, '').replace(/\\n\`\`\`$/, '');
+              const diffAttribute = data.diff ? \`data-diff="\${encodeURIComponent(data.diff)}"\` : '';
+              html += \`
+                <div class="code-block-wrapper">
+                  <div class="code-block-header">
+                    <span class="filename">\${filename}</span>
+                    <div class="buttons">
+                      <button class="copy-btn" data-target="\${id}">Copy</button>
+                      \${(data.diff && filename && !currentContext) ? \`<button class="apply-btn" data-filename="\${filename}" \${diffAttribute}>Apply Patch</button>\` : ''}
+                    </div>
+                  </div>
+                  <pre><code id="\${id}" class="language-dart">\${cleanCode.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>
+                </div>
+              \`;
             }
-            renderedHtml += text.slice(lastIndex).replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-            contentDiv.innerHTML = renderedHtml || text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            
+            contentDiv.innerHTML = html;
             messageDiv.appendChild(contentDiv);
             chatHistory.appendChild(messageDiv);
             chatHistory.scrollTop = chatHistory.scrollHeight;
-            return messageDiv;
           }
-          
-          chatHistory.addEventListener('click', (event) => {
-            const target = event.target;
+
+          chatHistory.addEventListener('click', e => {
+            const target = e.target;
             if (target.classList.contains('copy-btn')) {
-              const codeElement = document.getElementById(target.dataset.target);
-              navigator.clipboard.writeText(codeElement.textContent).then(() => {
+              const codeEl = document.getElementById(target.dataset.target);
+              navigator.clipboard.writeText(codeEl.textContent).then(() => {
                 target.textContent = 'Copied!';
                 setTimeout(() => target.textContent = 'Copy', 2000);
               });
             }
             if (target.classList.contains('apply-btn')) {
-              const codeElement = document.getElementById(target.dataset.target);
+              const diffContent = decodeURIComponent(target.dataset.diff);
               const filename = target.dataset.filename;
               vscode.postMessage({
                 command: 'applyPatch',
                 filename: filename,
-                diff: codeElement.textContent
+                diff: diffContent
               });
+            }
+          });
+
+          window.addEventListener('message', e => {
+            const { command, data, text } = e.data;
+            if (command === 'response') {
+              const loading = document.querySelector('.loading');
+              if (loading) loading.remove();
+              addMessage('bot', data);
+            } else if (command === 'setContext') {
+              currentSelectionContext = text;
+              contextCode.textContent = text;
+              contextContainer.style.display = 'block';
+              questionInput.placeholder = 'Ask about the selected code...';
+            } else if (command === 'showLoading') {
+              addMessage('bot loading', { explanation: 'Thinking...' });
             }
           });
 
           function sendMessage() {
             const text = questionInput.value.trim();
             if (text) {
-              addMessage('user', text);
-              vscode.postMessage({ command: 'ask', text });
+              addMessage('user', { explanation: text });
+              vscode.postMessage({
+                command: 'ask',
+                text: text,
+                context: currentSelectionContext
+              });
               questionInput.value = '';
-              questionInput.focus();
             }
           }
 
-          sendButton.addEventListener('click', sendMessage);
-
-          questionInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              sendMessage();
-            }
+          clearContextBtn.addEventListener('click', () => {
+            currentSelectionContext = '';
+            contextContainer.style.display = 'none';
+            questionInput.placeholder = 'Ask about your Flutter project...';
           });
 
-          window.addEventListener('message', event => {
-            const { command, text } = event.data;
-            if (command === 'response') {
-              const loadingMessage = document.querySelector('.loading');
-              if (loadingMessage) {
-                loadingMessage.remove();
-              }
-              addMessage('bot', text);
-            } else if (command === 'showLoading') {
-              addMessage('bot loading', 'Thinking...');
+          sendButton.addEventListener('click', sendMessage);
+          
+          questionInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
             }
           });
         </script>

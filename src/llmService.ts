@@ -1,23 +1,36 @@
+import * as vscode from 'vscode';
 import OpenAI from 'openai';
-import * as dotenv from 'dotenv';
-dotenv.config();
+import { ApiKeyManager } from './apiKeyManager';
 
-const client = new OpenAI({
-  apiKey: "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",
-});
+// The function now needs the extension context to access secrets
+export async function askLLM(
+    context: vscode.ExtensionContext, 
+    systemPrompt: string, 
+    userPrompt: string
+): Promise<string> {
 
-export async function askLLM(systemPrompt: string, userPrompt: string): Promise<string> {
-  try {
-    const completion = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-    });
+    // 1. Get the API key securely
+    const apiKey = await ApiKeyManager.getApiKey(context);
+    if (!apiKey) {
+        return '{"explanation": "API Key not configured. Please run the `Flutter Agent: Set OpenAI API Key` command.", "code": null, "diff": null}';
+    }
 
-    return completion.choices[0].message?.content || 'No response from LLM.';
-  } catch (err: any) {
-    return 'Error: ' + err.message;
-  }
+    // 2. Use the key to initialize the client
+    const client = new OpenAI({ apiKey });
+
+    try {
+        const res = await client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+            response_format: { type: "json_object" }, // Ensure JSON output
+        });
+        return res.choices[0].message?.content || '';
+    } catch (error: any) {
+        console.error("Error calling OpenAI:", error);
+        vscode.window.showErrorMessage(`Error communicating with OpenAI: ${error.message}`);
+        return `{"explanation": "Error: ${error.message}", "code": null, "diff": null}`;
+    }
 }

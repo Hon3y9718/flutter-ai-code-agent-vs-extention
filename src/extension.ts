@@ -5,6 +5,8 @@ import { getFlutterFiles } from "./projectScanner";
 import { buildContext } from "./contextManager";
 import { FlutterAgentCodeActionProvider } from "./codeActions";
 import { FlutterAgentHoverProvider } from "./hoverProvider";
+import { FlutterAgentCompletionProvider } from './completionProvider';
+import { ApiKeyManager } from './apiKeyManager';
 
 export function activate(context: vscode.ExtensionContext) {
   const chatProvider = new ChatViewProvider(context);
@@ -16,11 +18,46 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(
       { scheme: "file", language: "dart" },
-      new FlutterAgentHoverProvider()
+      new FlutterAgentHoverProvider(context)
     )
   );
 
-  // Example command: explain selected code
+  // Completion Provider
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      { scheme: 'file', language: 'dart' },
+      new FlutterAgentCompletionProvider(context),
+      '.', // Trigger characters (optional, e.g., '.', '(', etc.)
+      ' '
+    )
+  );
+
+  // This is the new listener for code selection.
+  // It sends the selected text to our chat panel.
+  context.subscriptions.push(
+    vscode.window.onDidChangeTextEditorSelection(event => {
+      if (event.selections.length > 0) {
+        const selectedText = event.textEditor.document.getText(event.selections[0]);
+        // Only update context if the selection is not empty
+        if (selectedText.trim() !== "") {
+          chatProvider.setChatContext(selectedText);
+        }
+      }
+    })
+  );
+
+  // command: explain selected code
+
+  // Set API Key
+   const setApiKeyCmd = vscode.commands.registerCommand(
+      'flutterAgent.setApiKey',
+      async () => {
+		ApiKeyManager.setApiKey(context);
+	  }
+    );
+
+	context.subscriptions.push(setApiKeyCmd);
+
   const explainCmd = vscode.commands.registerCommand(
     "flutterAgent.explain",
     async () => {
@@ -40,6 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
         async () => {
           const result = await askLLM(
+			context,
             `You are a senior Flutter developer using GetX. Explain what the selected code does and how it fits into the project.`,
             `File: ${filePath}\nCode:\n${selectedText}\n\nProject files:\n${projectContext.join(
               "\n"
@@ -74,7 +112,7 @@ export function activate(context: vscode.ExtensionContext) {
 
           const userPrompt = `Context:\n${relevantContext}\n\nPlease fix this selected code snippet:\n\`\`\`dart\n${selectedText}\n\`\`\``;
 
-          const fix = await askLLM(systemPrompt, userPrompt);
+          const fix = await askLLM(context, systemPrompt, userPrompt);
           progress.report({ increment: 50 });
 
           if (fix) {

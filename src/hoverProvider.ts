@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { askLLM } from "./llmService";
 
 export class FlutterAgentHoverProvider implements vscode.HoverProvider {
+constructor(private readonly context: vscode.ExtensionContext) {}
   async provideHover(
     document: vscode.TextDocument,
     position: vscode.Position,
@@ -27,7 +28,7 @@ export class FlutterAgentHoverProvider implements vscode.HoverProvider {
     const userPrompt = `Within this code context:\n\`\`\`dart\n${codeContext}\n\`\`\`\n\nExplain what the symbol "${symbol}" is and what it does.`;
 
     try {
-      const explanation = await askLLM(systemPrompt, userPrompt);
+      const explanation = await askLLM(this.context, systemPrompt, userPrompt);
       if (token.isCancellationRequested) {
         return null;
       }

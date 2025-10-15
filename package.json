@@ -1,10 +1,19 @@
 {
-  "name": "techicious-code-agent",
-  "displayName": "techicious-code-agent",
+  "name": "flutter-code-agent",
+  "displayName": "flutter-code-agent",
   "description": "",
+  "publisher": "Umesh Kumar",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.104.0"
+    "vscode": "^1.105.0"
+  },
+  "license": {
+    "name": "flutter-code-agent",
+    "license": "CC-BY-NC-SA-4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hon3y9718/Hon3y9718-flutter-ai-code-agent-vs-extention.git"
   },
   "categories": [
     "Other"
@@ -13,6 +22,11 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "flutterAgent.setApiKey",
+        "title": "Flutter Agent: Set OpenAI API Key",
+        "category": "Flutter Agent"
+      },
       {
         "command": "flutterAgent.explain",
         "title": "Flutter Agent: Explain Selected Code"
@@ -23,7 +37,7 @@
         {
           "id": "flutterAgent-sidebar",
           "title": "Flutter Agent",
-          "icon": "$(comment-discussion)" 
+          "icon": "$(comment-discussion)"
         }
       ]
     },
